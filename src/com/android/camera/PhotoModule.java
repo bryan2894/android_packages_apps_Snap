@@ -26,6 +26,7 @@ import android.content.SharedPreferences.Editor;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
+import android.graphics.SurfaceTexture;
 import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.Parameters;
 import android.hardware.Camera.Size;
@@ -51,7 +52,6 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.OrientationEventListener;
-import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Toast;
@@ -664,12 +664,12 @@ public class PhotoModule
             startPreview();
         } else {
             synchronized (mCameraDevice) {
-                SurfaceHolder sh = mUI.getSurfaceHolder();
-                if (sh == null) {
-                    Log.w(TAG, "startPreview: holder for preview are not ready.");
+                SurfaceTexture st = mUI.getSurfaceTexture();
+                if (st == null) {
+                    Log.w(TAG, "startPreview: surfaceTexture is not ready.");
                     return;
                 }
-                mCameraDevice.setPreviewDisplay(sh);
+                mCameraDevice.setPreviewTexture(st);
             }
         }
     }
@@ -687,7 +687,7 @@ public class PhotoModule
         } catch (InterruptedException ex) {
             // ignore
         }
-        mCameraDevice.setPreviewDisplay(null);
+        mCameraDevice.setPreviewTexture(null);
         stopPreview();
     }
 
@@ -2263,8 +2263,7 @@ public class PhotoModule
                 || mUI.collapseCameraControls()
                 || (mCameraState == SWITCHING_CAMERA)
                 || (mCameraState == PREVIEW_STOPPED)
-                || (null == mFocusManager)
-                || (null == mUI.getSurfaceHolder())) return;
+                || (null == mFocusManager)) return;
 
         mShutterPressing = true;
 
@@ -2843,14 +2842,17 @@ public class PhotoModule
         }
 
         synchronized (mCameraDevice) {
-            SurfaceHolder sh = null;
-            Log.v(TAG, "startPreview: SurfaceHolder (MDP path)");
+            SurfaceTexture st = null;
+            Log.v(TAG, "startPreview: SurfaceTexture (GPU path)");
             if (mUI != null) {
-                sh = mUI.getSurfaceHolder();
+                st = mUI.getSurfaceTexture();
             }
 
-            // Let UI set its expected aspect ratio
-            mCameraDevice.setPreviewDisplay(sh);
+            // Surfacetexture could be null here, but its still valid and safe to set null
+            // surface before startpreview. This will help in basic preview setup and
+            // surface creation in parallel. Once valid surface is ready in onPreviewUIReady()
+            // we set the surface to camera to actually start preview.
+            mCameraDevice.setPreviewTexture(st);
         }
 
         if (!mCameraPreviewParamsReady) {
