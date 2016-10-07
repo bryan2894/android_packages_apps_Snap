@@ -23,8 +23,8 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_gravity="center_vertical|center_horizontal" >
-        <SurfaceView
-            android:id="@+id/mdp_preview_content"
+        <TextureView
+            android:id="@+id/preview_content"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
     </FrameLayout>

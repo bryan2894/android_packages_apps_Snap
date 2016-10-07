@@ -31,6 +31,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Point;
 import android.graphics.RectF;
+import android.graphics.SurfaceTexture;
 import android.graphics.drawable.AnimationDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.hardware.Camera;
@@ -40,8 +41,7 @@ import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.TextureView;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnLayoutChangeListener;
@@ -78,7 +78,7 @@ import com.android.camera.util.CameraUtil;
 
 public class PhotoUI implements PieListener,
         PreviewGestures.SingleTapListener,
-        SurfaceHolder.Callback,
+        TextureView.SurfaceTextureListener,
         CameraRootView.MyDisplayListener,
         CameraManager.CameraFaceDetectionCallback {
 
@@ -91,7 +91,8 @@ public class PhotoUI implements PieListener,
     private PreviewGestures mGestures;
 
     private CameraRootView mRootView;
-    private SurfaceHolder mSurfaceHolder;
+    private SurfaceTexture mSurfaceTexture;
+    private final Object mSurfaceTextureLock = new Object();
 
     private PopupWindow mPopup;
     private ShutterButton mShutterButton;
@@ -130,7 +131,7 @@ public class PhotoUI implements PieListener,
     private View mFlashOverlay;
 
     private SurfaceTextureSizeChangedListener mSurfaceTextureSizeListener;
-    private SurfaceView mSurfaceView = null;
+    private TextureView mTextureView;
     private float mAspectRatio = 4f / 3f;
     private boolean mAspectRatioResize;
 
@@ -171,6 +172,22 @@ public class PhotoUI implements PieListener,
                 if (size != null) {
                     setAspectRatio((float) size.width / size.height);
                 }
+            }
+
+            int width = right - left;
+            int height = bottom - top;
+            boolean isMaxSizeBeingValid = false;
+
+            if (mMaxPreviewWidth == 0 && mMaxPreviewHeight == 0) {
+                mMaxPreviewWidth = width;
+                mMaxPreviewHeight = height;
+                isMaxSizeBeingValid = true;
+            }
+
+            if (mOrientationResize != mPrevOrientationResize
+                    || mAspectRatioResize || isMaxSizeBeingValid) {
+                layoutPreview(mAspectRatio);
+                mAspectRatioResize = false;
             }
         }
     };
@@ -226,10 +243,10 @@ public class PhotoUI implements PieListener,
 
     public synchronized void applySurfaceChange(SURFACE_STATUS status) {
         if(status == SURFACE_STATUS.HIDE) {
-            mSurfaceView.setVisibility(View.GONE);
+            mTextureView.setVisibility(View.GONE);
             return;
         }
-        mSurfaceView.setVisibility(View.VISIBLE);
+        mTextureView.setVisibility(View.VISIBLE);
     }
 
     public PhotoUI(CameraActivity activity, PhotoController controller, View parent) {
@@ -239,36 +256,11 @@ public class PhotoUI implements PieListener,
         mActivity.getLayoutInflater().inflate(R.layout.photo_module, mRootView, true);
         mPreviewCover = mRootView.findViewById(R.id.preview_cover);
         // display the view
-        mSurfaceView = (SurfaceView) mRootView.findViewById(R.id.mdp_preview_content);
-        mSurfaceView.setVisibility(View.VISIBLE);
-        mSurfaceHolder = mSurfaceView.getHolder();
-        mSurfaceHolder.addCallback(this);
-        mSurfaceHolder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
-        Log.v(TAG, "Using mdp_preview_content (MDP path)");
-        mSurfaceView.addOnLayoutChangeListener(new OnLayoutChangeListener() {
-            @Override
-            public void onLayoutChange(View v, int left, int top, int right,
-                    int bottom, int oldLeft, int oldTop, int oldRight,
-                    int oldBottom) {
-                int width = right - left;
-                int height = bottom - top;
-                boolean isMaxSizeBeingValid = false;
-
-                tryToCloseSubList();
-
-                if (mMaxPreviewWidth == 0 && mMaxPreviewHeight == 0) {
-                    mMaxPreviewWidth = width;
-                    mMaxPreviewHeight = height;
-                    isMaxSizeBeingValid = true;
-                }
-
-                if (mOrientationResize != mPrevOrientationResize
-                        || mAspectRatioResize || isMaxSizeBeingValid) {
-                    layoutPreview(mAspectRatio);
-                    mAspectRatioResize = false;
-                }
-            }
-        });
+        mTextureView = (TextureView) mRootView.findViewById(R.id.preview_content);
+        mTextureView.setVisibility(View.VISIBLE);
+        mTextureView.setSurfaceTextureListener(this);
+        mTextureView.addOnLayoutChangeListener(mLayoutListener);
+        Log.v(TAG, "Using preview_content (GPU path)");
 
         mRenderOverlay = (RenderOverlay) mRootView.findViewById(R.id.render_overlay);
         mFlashOverlay = mRootView.findViewById(R.id.flash_overlay);
@@ -443,7 +435,7 @@ public class PhotoUI implements PieListener,
             }
         }
 
-        mSurfaceView.setLayoutParams(lp);
+        mTextureView.setLayoutParams(lp);
         if (mFaceView != null) {
             mFaceView.setLayoutParams(lp);
         }
@@ -456,28 +448,42 @@ public class PhotoUI implements PieListener,
         mSurfaceTextureSizeListener = listener;
     }
 
-    // SurfaceHolder callbacks
+    protected Object getSurfaceTextureLock() {
+        return mSurfaceTextureLock;
+    }
+
+    // SurfaceTexture callbacks
     @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        Log.v(TAG, "surfaceChanged: width =" + width + ", height = " + height);
-        RectF r = new RectF(mSurfaceView.getLeft(), mSurfaceView.getTop(),
-                mSurfaceView.getRight(), mSurfaceView.getBottom());
-        mController.onPreviewRectChanged(CameraUtil.rectFToRect(r));
+    public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+        synchronized (mSurfaceTextureLock) {
+            Log.v(TAG, "SurfaceTexture ready.");
+            mSurfaceTexture = surface;
+            mController.onPreviewUIReady();
+            mActivity.updateThumbnail(mThumbnail);
+        }
     }
 
     @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        Log.v(TAG, "surfaceCreated");
-        mSurfaceHolder = holder;
-        mController.onPreviewUIReady();
-        mActivity.updateThumbnail(mThumbnail);
+    public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+        // Ignored, Camera does all the work for us
     }
 
     @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        Log.v(TAG, "surfaceDestroyed");
-        mSurfaceHolder = null;
-        mController.onPreviewUIDestroyed();
+    public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        synchronized (mSurfaceTextureLock) {
+            mSurfaceTexture = null;
+            mController.onPreviewUIDestroyed();
+            Log.w(TAG, "SurfaceTexture destroyed");
+            return true;
+        }
+    }
+
+    @Override
+    public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+        // Make sure preview cover is hidden if preview data is available.
+        if (mPreviewCover.getVisibility() != View.GONE) {
+            mPreviewCover.setVisibility(View.GONE);
+        }
     }
 
     public CameraRootView getRootView() {
@@ -1045,16 +1051,16 @@ public class PhotoUI implements PieListener,
         mActivity.setSwipingEnabled(enable);
     }
 
-    public SurfaceHolder getSurfaceHolder() {
-        return mSurfaceHolder;
+    public SurfaceTexture getSurfaceTexture() {
+        return mSurfaceTexture;
     }
 
     public void hideSurfaceView() {
-        mSurfaceView.setVisibility(View.INVISIBLE);
+        mTextureView.setVisibility(View.INVISIBLE);
     }
 
     public void showSurfaceView() {
-        mSurfaceView.setVisibility(View.VISIBLE);
+        mTextureView.setVisibility(View.VISIBLE);
     }
     // Countdown timer
 
